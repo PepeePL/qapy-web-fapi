@@ -11,11 +11,19 @@ from passlib.context import CryptContext
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from jose import jwt, JWTError, ExpiredSignatureError
 from dotenv import load_dotenv
+
 router = APIRouter(
     prefix="/auth",
     tags=["auth"]
 )
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
+db_dependency = Annotated[Session, Depends(get_db)]
 
 load_dotenv()
 SECRET_KEY = os.environ['SECRET']
@@ -40,14 +48,9 @@ class PatchUserRequest(BaseModel):
     
 def check_permission(required_permission: int, user_permission: int):
     if user_permission < required_permission:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Not enough permission')    
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Not enough permission.')    
     
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+
         
 def auth_user(username: str, password: str, db):
     user = db.query(Users).filter(Users.username == username).first()
@@ -80,8 +83,7 @@ def get_user(token: Annotated[str, Depends(oauth2_bearer)]):
     except JWTError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
                                 detail="Couldn't validate user.")        
-        
-db_dependency = Annotated[Session, Depends(get_db)]
+
 user_dependency = Annotated[dict, Depends(get_user)]
 
 
@@ -99,10 +101,10 @@ async def create_user(db: db_dependency, user: user_dependency, create_user_requ
     db.commit()
     
 @router.delete('/{user_id}', status_code=status.HTTP_204_NO_CONTENT)
-async def remove_user(user_id: int, db: Session = Depends(get_db), user: dict = Depends(get_user)):
+async def remove_user(user_id: int, db: db_dependency, user: user_dependency):
     target_user = db.query(Users).filter(Users.id == user_id).first()
     if not target_user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='User not found')
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='User not found.')
     check_permission(80, user.get('permission'))
     check_permission(target_user.permission_level, user.get('permission'))
     
@@ -113,9 +115,9 @@ async def remove_user(user_id: int, db: Session = Depends(get_db), user: dict = 
 async def patch_user(user_id: int, db: db_dependency, user: user_dependency, patch_user_request: PatchUserRequest):
     target_user = db.query(Users).filter(Users.id == user_id).first()
     if not target_user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='User not found')
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='User not found.')
     if user.get('permission') < 80 or user.get('permission') <= target_user.permission_level:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Not enough permission')
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Not enough permission.')
     
     if patch_user_request.username:
         target_user.username = patch_user_request.username
@@ -138,6 +140,36 @@ async def login_for_access_token(form_data: Annotated[OAuth2PasswordRequestForm,
     session = create_session(user.username, user.id, user.permission_level, timedelta(hours=6))
     
     return {'access_token': session, 'token_type': 'bearer'}
-    
 
+@router.get("/permission", status_code=status.HTTP_200_OK)
+async def check_user_permission(token: str, required_permission: int):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get('sub')
+        user_id: int = payload.get('id')
+        permission_level: int = payload.get('permission')
+        if username is None or user_id is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                                detail="Couldn't validate user.")
         
+        check_permission(required_permission, permission_level)
+        return {"detail": "Permission granted."}
+    
+    except ExpiredSignatureError:
+            raise HTTPException(status_code=status.HTTP_410_GONE,
+                                detail="The token has expired.")
+    except JWTError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                                detail="Couldn't validate user.") 
+        
+@router.get("/", status_code=status.HTTP_200_OK)
+async def user(user: user_dependency, db: db_dependency):
+    if user is None:
+        raise HTTPException(status_code=401, detail='Auth Failed')
+    return {'User': user}
+
+@router.get('/users', status_code=status.HTTP_200_OK)
+async def list_users(db: db_dependency):
+    users = db.query(Users).all()
+    user_list = [{"id": user.id, "username": user.username, "permission_level": user.permission_level} for user in users]
+    return user_list
