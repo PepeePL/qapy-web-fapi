@@ -1,5 +1,6 @@
 from datetime import timedelta, datetime, timezone
-from typing import Annotated
+import os
+from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -9,15 +10,15 @@ from models import Users
 from passlib.context import CryptContext
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from jose import jwt, JWTError, ExpiredSignatureError
-
+from dotenv import load_dotenv
 router = APIRouter(
     prefix="/auth",
     tags=["auth"]
 )
 
 
-
-SECRET_KEY = "123nu1id1l234l567lp7dsdfs8daek232132kdas2137"
+load_dotenv()
+SECRET_KEY = os.environ['SECRET']
 ALGORITHM = "HS256"
 
 bcrypt_context = CryptContext(schemes=['bcrypt'], deprecated='auto')
@@ -31,6 +32,15 @@ class CreateUserRequest(BaseModel):
 class Token(BaseModel):
     access_token: str
     token_type: str
+    
+class PatchUserRequest(BaseModel):
+    username: Optional[str] = None
+    password: Optional[str] = None
+    permission: Optional[int] = None
+    
+def check_permission(required_permission: int, user_permission: int):
+    if user_permission < required_permission:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Not enough permission')    
     
 def get_db():
     db = SessionLocal()
@@ -78,8 +88,7 @@ user_dependency = Annotated[dict, Depends(get_user)]
 
 @router.post('/', status_code=status.HTTP_201_CREATED)
 async def create_user(db: db_dependency, user: user_dependency, create_user_request: CreateUserRequest):
-    if user.get('permission') < 99:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Not enough permission')
+    check_permission(99, user.get('permission'))
     
     create_user_model = Users(
         username=create_user_request.username,
@@ -90,16 +99,35 @@ async def create_user(db: db_dependency, user: user_dependency, create_user_requ
     db.commit()
     
 @router.delete('/{user_id}', status_code=status.HTTP_204_NO_CONTENT)
-async def remove_user(user_id: int, db: db_dependency, user: user_dependency):
-    if user.get('permission') < 99:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Not enough permission')
-    
+async def remove_user(user_id: int, db: Session = Depends(get_db), user: dict = Depends(get_user)):
     target_user = db.query(Users).filter(Users.id == user_id).first()
     if not target_user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='User not found')
+    check_permission(80, user.get('permission'))
+    check_permission(target_user.permission_level, user.get('permission'))
     
     db.delete(target_user)
     db.commit()
+
+@router.patch('/{user_id}', status_code=status.HTTP_200_OK)
+async def patch_user(user_id: int, db: db_dependency, user: user_dependency, patch_user_request: PatchUserRequest):
+    target_user = db.query(Users).filter(Users.id == user_id).first()
+    if not target_user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='User not found')
+    if user.get('permission') < 80 or user.get('permission') <= target_user.permission_level:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Not enough permission')
+    
+    if patch_user_request.username:
+        target_user.username = patch_user_request.username
+    if patch_user_request.password:
+        target_user.hashed_pass = bcrypt_context.hash(patch_user_request.password)
+    if patch_user_request.permission is not None:
+        if user.get('permission') <= patch_user_request.permission:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Not enough permission')
+        target_user.permission_level = patch_user_request.permission
+    db.commit()
+    return target_user
+
         
 @router.post("/session", response_model=Token)
 async def login_for_access_token(form_data: Annotated[OAuth2PasswordRequestForm, Depends()],

@@ -40,5 +40,5 @@ async def user(user: user_dependency, db: db_dependency):
 @app.get('/users', status_code=status.HTTP_200_OK)
 async def list_users(db: db_dependency):
     users = db.query(Users).all()
-    user_list = [{"id": user.id, "username": user.username} for user in users]
+    user_list = [{"id": user.id, "username": user.username, "permission_level": user.permission_level} for user in users]
     return user_list
