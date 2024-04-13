@@ -1,25 +1,18 @@
-from database import engine, SessionLocal
-from typing import Annotated
-from sqlalchemy.orm import Session
-from fastapi import FastAPI, status, Depends, HTTPException
 from fastapi.responses import RedirectResponse
+from database import engine
+from database import db_dependency
+from fastapi import FastAPI, HTTPException, status
 import models
 import auth
 import short
-from auth import get_user
+import permissions
 from fastapi.middleware.cors import CORSMiddleware
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
-db_dependency = Annotated[Session, Depends(get_db)]
 
 app = FastAPI()
 
 app.include_router(auth.router)
+app.include_router(permissions.router)
 app.include_router(short.router)
 models.Base.metadata.create_all(bind=engine)
 
@@ -31,7 +24,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-user_dependency = Annotated[dict, Depends(get_user)]
 
 @app.get("/{short_code}", response_model=short.URLResponse)
 async def redirect_to_long_url(short_code: str, db: db_dependency):

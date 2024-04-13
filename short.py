@@ -1,25 +1,15 @@
 import secrets
 from pydantic import BaseModel
-from auth import check_permission, get_user
-from database import SessionLocal
-from typing import Annotated, Optional
-from sqlalchemy.orm import Session
-from fastapi import APIRouter, status, Depends, HTTPException
-from models import URL
+from database import db_dependency
+from auth import user_dependency
+from typing import Optional
+from fastapi import APIRouter, status, HTTPException
+from models import URL, User
 
 router = APIRouter(
     prefix="/short",
     tags=["short"]
 )
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-db_dependency = Annotated[Session, Depends(get_db)]
-user_dependency = Annotated[dict, Depends(get_user)]
 class URLRequest(BaseModel):
     long_url: str
     custom_short_url: Optional[str] = None
@@ -27,34 +17,38 @@ class URLRequest(BaseModel):
 class PatchURLRequest(BaseModel):
     long_url: Optional[str] = None
     custom_short_url: Optional[str] = None
-
-# class URLPermissionRequest(BaseModel):
-#     token: str
-
 class URLResponse(BaseModel):
     short_url: str
 
 @router.get("/urls/", status_code=status.HTTP_200_OK)
-async def list_urls(db: db_dependency):
+async def list_urls(db: db_dependency, user: user_dependency):
+    caller_user = db.query(User).filter(User.username == user.get('username')).first()
+    if caller_user.no_permission_and_not_admin(13):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permission.")
     urls = db.query(URL).all()
     url_list = [{"id": url.id, "short_url": url.short_code, "long_url": url.long_url} for url in urls]
     return url_list
 
-@router.post("/shorten", response_model=URLResponse)
+@router.post("/shorten", response_model=URLResponse, status_code=status.HTTP_201_CREATED)
 async def shorten_url(request: URLRequest, db: db_dependency, user: user_dependency):
-    check_permission(30, user.get('permission'))
-
-    short_code = request.custom_short_url or secrets.token_urlsafe(6)
+    caller_user = db.query(User).filter(User.username == user.get('username')).first()
     
+    if caller_user.no_permission_and_not_admin(9):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permission.")
+    if caller_user.no_permission_and_not_admin(10):
+        short_code = request.custom_short_url or secrets.token_urlsafe(6)
+    else:
+        short_code = secrets.token_urlsafe(6)
     url = URL(short_code=short_code, long_url=request.long_url)
     db.add(url)
     db.commit()
-
     return {"short_url": f"http://localhost:8000/{short_code}"}
 
-@router.patch("/url/{url_id}", status_code=status.HTTP_200_OK)
+@router.patch("/urls/{url_id}", status_code=status.HTTP_200_OK)
 async def update_url(url_id: int, url_update: PatchURLRequest, db: db_dependency, user: user_dependency):
-    check_permission(40, user.get('permission'))
+    caller_user = db.query(User).filter(User.username == user.get('username')).first()
+    if caller_user.no_permission_and_not_admin(11):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permission.")
     db_url = db.query(URL).filter(URL.id == url_id).first()
     if not db_url:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="URL not found")
@@ -67,12 +61,15 @@ async def update_url(url_id: int, url_update: PatchURLRequest, db: db_dependency
 
     return {"short_url": f"http://localhost:8000/{db_url.short_code}"}
 
-@router.delete("/url/{url_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/urls/{url_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_url_record(url_id: int, db: db_dependency, user: user_dependency):
-    check_permission(40, user.get('permission'))
+    caller_user = db.query(User).filter(User.username == user.get('username')).first()
+    if caller_user.no_permission_and_not_admin(12):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permission.")
     url = db.query(URL).get(url_id)
     if not url:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="URL not found")
 
     db.delete(url)
     db.commit()
+    return
