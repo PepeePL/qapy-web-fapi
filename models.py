@@ -16,6 +16,7 @@ class User(Base):
     permissions = relationship("Permission", secondary=user_permissions, back_populates="users")
     created_at = Column(DateTime)
     updated_at = Column(DateTime)
+    is_active = Column(Boolean, default=True)
     is_admin = Column(Boolean, default=False)
     
     def has_permission(self, permission_id):

@@ -27,6 +27,7 @@ class CreateUserRequest(BaseModel):
     password: str
     permission_level: int
     permissions: List[int] = []
+    is_active: bool = True
     is_admin: bool = False
     
 class PatchUserRequest(BaseModel):
@@ -34,21 +35,15 @@ class PatchUserRequest(BaseModel):
     password: Optional[str] = None
     permission_level: Optional[int] = None
     permissions: Optional[List[int]] = None
+    is_active: Optional[bool] = None
     
 class Token(BaseModel):
     access_token: str
     token_type: str
-    
-def auth_user(username: str, password: str, db: db_dependency):
-    user = db.query(User).filter(User.username == username).first()
-    if not user:
-        return False
-    if not bcrypt_context.verify(password, user.hashed_pass):
-        return False
-    return user
 
-def create_session(username:str, user_id: int, permissions: list[str], permission_level: int, expires_delta: timedelta):
-    encode = {'id': user_id, 'sub': username, 'permissions': permissions, 'permission_level': permission_level}
+
+def create_session(username:str, user_id: int, permissions: list[str], permission_level: int, is_admin: bool, is_active: bool, expires_delta: timedelta):
+    encode = {'id': user_id, 'sub': username, 'permissions': permissions, 'permission_level': permission_level, 'is_admin': is_admin, 'is_active': is_active}
     expires = datetime.now(timezone.utc) + expires_delta
     encode.update({'exp': expires})
     return jwt.encode(encode, SECRET_KEY, algorithm=ALGORITHM)
@@ -59,10 +54,12 @@ def get_user(token: Annotated[str, Depends(oauth2_bearer)]):
         username: str = payload.get('sub')
         user_id: int = payload.get('id')
         permissions: List[int] = payload.get('permissions')
+        is_admin: bool = payload.get('is_admin')
+        is_active: bool = payload.get('is_active')
         if username is None or user_id is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
                                 detail="Couldn't validate user.")
-        return {'username': username, 'id': user_id, 'permissions': permissions}
+        return {'username': username, 'id': user_id, 'permissions': permissions, 'is_admin': is_admin, 'is_active': is_active}
     except ExpiredSignatureError:
             raise HTTPException(status_code=status.HTTP_410_GONE,
                                 detail="The token has expired.")
@@ -80,7 +77,7 @@ async def list_users(db: db_dependency, user: user_dependency):
     users = db.query(User).all()
     user_list = [{"id": user.id, "username": user.username, "permission_level": user.permission_level,
                   "permissions": user.permissions, "created_at": user.created_at,
-                  "updated_at": user.updated_at, "is_admin": user.is_admin} for user in users]
+                  "updated_at": user.updated_at, "is_active": user.is_active, "is_admin": user.is_admin} for user in users]
     return user_list
 
 @router.post('/users', status_code=status.HTTP_201_CREATED)
@@ -139,7 +136,6 @@ async def patch_user(user_id: int, db: db_dependency, user: user_dependency, cha
     if caller_user.is_admin:
         if changed_user_request.username:
             target_user.username = changed_user_request.username
-        
         if changed_user_request.password:
             target_user.hashed_pass = bcrypt_context.hash(changed_user_request.password)
         if changed_user_request.permission_level:
@@ -148,6 +144,8 @@ async def patch_user(user_id: int, db: db_dependency, user: user_dependency, cha
             target_user.permissions.clear()
             request_permissions = db.query(Permission).filter(Permission.id.in_(changed_user_request.permissions)).all()
             target_user.permissions.extend(request_permissions)
+        if changed_user_request.is_active is not None:
+            target_user.is_active = changed_user_request.is_active
         target_user.updated_at = datetime.now(timezone.utc)
         db.commit()
         return target_user
@@ -165,6 +163,9 @@ async def patch_user(user_id: int, db: db_dependency, user: user_dependency, cha
         if changed_user_request.permission_level >= caller_user.permission_level:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Not enough permission')
         target_user.permission_level = changed_user_request.permission_level
+    
+    if changed_user_request.is_active:
+            target_user.is_active = changed_user_request.is_active
     
     if changed_user_request.permissions:
         caller_permissions = set(caller_user.permissions_as_list())
@@ -187,14 +188,18 @@ async def patch_user(user_id: int, db: db_dependency, user: user_dependency, cha
     db.commit()
     return target_user
 
-@router.post("/session", response_model=Token)
+@router.post("/session", response_model=Token, status_code=status.HTTP_200_OK)
 async def login_for_access_token(form_data: Annotated[OAuth2PasswordRequestForm, Depends()],#
                                  db: db_dependency):
     
-    user = auth_user(form_data.username, form_data.password, db)
+    user = db.query(User).filter(User.username == form_data.username).first()
     if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Couldn't validate user.")
-    session = create_session(user.username, user.id, user.permissions_as_list(), user.permission_level, timedelta(hours=6))
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect username.")
+    if not bcrypt_context.verify(form_data.password, user.hashed_pass):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect password.")
+    if not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive user.")
+    session = create_session(user.username, user.id, user.permissions_as_list(), user.permission_level, user.is_admin, user.is_active, timedelta(hours=6))
     
     return {'access_token': session, 'token_type': 'bearer'}
 
@@ -224,4 +229,4 @@ async def login_for_access_token(form_data: Annotated[OAuth2PasswordRequestForm,
 async def user(user: user_dependency):
     if user is None:
         raise HTTPException(status_code=401, detail='Auth Failed')
-    return {'User': user}
+    return user
