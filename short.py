@@ -36,9 +36,10 @@ async def shorten_url(request: URLRequest, db: db_dependency, user: user_depende
     if caller_user.no_permission_and_not_admin(9):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permission.")
     if caller_user.no_permission_and_not_admin(10):
-        short_code = request.custom_short_url or secrets.token_urlsafe(6)
-    else:
         short_code = secrets.token_urlsafe(6)
+
+    else:
+        short_code = request.custom_short_url or secrets.token_urlsafe(6)
     url = URL(short_code=short_code, long_url=request.long_url)
     db.add(url)
     db.commit()
